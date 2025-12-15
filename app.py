@@ -20,14 +20,16 @@ def generate_ecg():
     return base + p + qrs + noise
 
 
-# ✅ ROOT ROUTE (IMPORTANT)
+# ✅ ROOT (HEALTH CHECK)
 @app.route("/", methods=["GET"])
 def home():
     return "ECG Backend is running"
 
 
-# ✅ ECG API ROUTE
+# ✅ ECG API (NO TRAILING SLASH)
 @app.route("/api/ecg/latest", methods=["GET"])
+# ✅ ECG API (WITH TRAILING SLASH)
+@app.route("/api/ecg/latest/", methods=["GET"])
 def get_latest_ecg():
     voltage = []
 
@@ -42,7 +44,6 @@ def get_latest_ecg():
     })
 
 
-# ✅ DEPLOYMENT ENTRY POINT
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
