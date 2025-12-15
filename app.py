@@ -19,6 +19,14 @@ def generate_ecg():
     t += 0.25
     return base + p + qrs + noise
 
+
+# ✅ ROOT ROUTE (IMPORTANT)
+@app.route("/", methods=["GET"])
+def home():
+    return "ECG Backend is running"
+
+
+# ✅ ECG API ROUTE
 @app.route("/api/ecg/latest", methods=["GET"])
 def get_latest_ecg():
     voltage = []
@@ -33,6 +41,8 @@ def get_latest_ecg():
         "bpm": random.randint(70, 78)
     })
 
+
+# ✅ DEPLOYMENT ENTRY POINT
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
