@@ -1,49 +1,100 @@
-from flask import Flask, jsonify
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import math
-import random
 import time
-import os
+import threading
+from collections import deque
 
 app = Flask(__name__)
 CORS(app)
 
-t = 0
+# ================= CONFIG =================
+MAX_BUFFER = 1000
+OFFLINE_TIMEOUT = 5            # seconds
+R_PEAK_THRESHOLD = 2.0         # adjust if needed
+MIN_RR_INTERVAL = 0.3          # seconds (max 200 BPM)
+MAX_RR_INTERVAL = 2.0          # seconds (min 30 BPM)
 
-def generate_ecg():
-    global t
-    base = 1.65
-    noise = random.uniform(-0.03, 0.03)
-    p = math.sin(t) * 0.05
-    qrs = math.exp(-((t % 6) - 3) ** 2) * 1.2
-    t += 0.25
-    return base + p + qrs + noise
+# ================= STORAGE =================
+ecg_buffer = deque(maxlen=MAX_BUFFER)
+r_peaks = deque(maxlen=10)     # store timestamps of R-peaks
+last_update_time = 0
+last_voltage = 0
+lock = threading.Lock()
 
+# ================= BPM LOGIC =================
+def calculate_bpm():
+    if len(r_peaks) < 2:
+        return None
 
-# ✅ ROOT (HEALTH CHECK)
-@app.route("/", methods=["GET"])
-def home():
-    return "ECG Backend is running"
+    rr_intervals = [
+        r_peaks[i] - r_peaks[i - 1]
+        for i in range(1, len(r_peaks))
+    ]
 
+    # filter unrealistic intervals
+    rr_intervals = [
+        rr for rr in rr_intervals
+        if MIN_RR_INTERVAL <= rr <= MAX_RR_INTERVAL
+    ]
 
-# ✅ ECG API (NO TRAILING SLASH)
+    if not rr_intervals:
+        return None
+
+    avg_rr = sum(rr_intervals) / len(rr_intervals)
+    bpm = int(60 / avg_rr)
+    return bpm
+
+# ================= ESP32 POST =================
+@app.route("/api/ecg", methods=["POST"])
+def receive_ecg():
+    global last_update_time, last_voltage
+
+    data = request.get_json()
+    if not data or "voltage" not in data:
+        return jsonify({"error": "Invalid payload"}), 400
+
+    voltage = float(data["voltage"])
+    now = time.time()
+
+    with lock:
+        ecg_buffer.append(voltage)
+        last_update_time = now
+
+        # R-peak detection (rising edge + threshold)
+        if (
+            voltage > R_PEAK_THRESHOLD
+            and last_voltage <= R_PEAK_THRESHOLD
+        ):
+            r_peaks.append(now)
+
+        last_voltage = voltage
+
+    return jsonify({"status": "ok"}), 200
+
+# ================= FRONTEND GET =================
 @app.route("/api/ecg/latest", methods=["GET"])
-# ✅ ECG API (WITH TRAILING SLASH)
-@app.route("/api/ecg/latest/", methods=["GET"])
 def get_latest_ecg():
-    voltage = []
+    now = time.time()
 
-    for _ in range(20):
-        v = generate_ecg()
-        voltage.append(round(v, 3))
+    with lock:
+        is_online = (now - last_update_time) < OFFLINE_TIMEOUT
+        voltage_data = list(ecg_buffer)[-20:] if is_online else []
+        bpm = calculate_bpm() if is_online else None
 
     return jsonify({
-        "timestamp": int(time.time() * 1000),
-        "voltage": voltage,
-        "bpm": random.randint(70, 78)
+        "timestamp": int(now * 1000),
+        "voltage": voltage_data,
+        "bpm": bpm,
+        "device_online": is_online
     })
 
+# ================= HEALTH CHECK =================
+@app.route("/")
+def home():
+    return "ECG Backend Running (Real BPM)", 200
 
+# ================= RUN =================
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
