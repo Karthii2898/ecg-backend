@@ -9,16 +9,16 @@ CORS(app)
 
 # ================= CONFIG =================
 MAX_BUFFER = 1000
-OFFLINE_TIMEOUT = 5            # seconds
-R_PEAK_THRESHOLD = 2.0         # adjust if needed
-MIN_RR_INTERVAL = 0.3          # seconds (max 200 BPM)
-MAX_RR_INTERVAL = 2.0          # seconds (min 30 BPM)
+OFFLINE_TIMEOUT = 5          # seconds
+R_PEAK_THRESHOLD = 2.0       # adjust if needed
+MIN_RR = 0.3                 # seconds (200 BPM max)
+MAX_RR = 2.0                 # seconds (30 BPM min)
 
 # ================= STORAGE =================
 ecg_buffer = deque(maxlen=MAX_BUFFER)
-r_peaks = deque(maxlen=10)     # store timestamps of R-peaks
+r_peaks = deque(maxlen=10)
 last_update_time = 0
-last_voltage = 0
+last_voltage = 0.0
 lock = threading.Lock()
 
 # ================= BPM LOGIC =================
@@ -31,18 +31,16 @@ def calculate_bpm():
         for i in range(1, len(r_peaks))
     ]
 
-    # filter unrealistic intervals
     rr_intervals = [
         rr for rr in rr_intervals
-        if MIN_RR_INTERVAL <= rr <= MAX_RR_INTERVAL
+        if MIN_RR <= rr <= MAX_RR
     ]
 
     if not rr_intervals:
         return None
 
     avg_rr = sum(rr_intervals) / len(rr_intervals)
-    bpm = int(60 / avg_rr)
-    return bpm
+    return int(60 / avg_rr)
 
 # ================= ESP32 POST =================
 @app.route("/api/ecg", methods=["POST"])
@@ -53,21 +51,21 @@ def receive_ecg():
     if not data or "voltage" not in data:
         return jsonify({"error": "Invalid payload"}), 400
 
-    voltage = float(data["voltage"])
+    voltages = data["voltage"]
     now = time.time()
 
     with lock:
-        ecg_buffer.append(voltage)
+        for v in voltages:
+            v = float(v)
+            ecg_buffer.append(v)
+
+            # R-peak detection (threshold + rising edge)
+            if v > R_PEAK_THRESHOLD and last_voltage <= R_PEAK_THRESHOLD:
+                r_peaks.append(now)
+
+            last_voltage = v
+
         last_update_time = now
-
-        # R-peak detection (rising edge + threshold)
-        if (
-            voltage > R_PEAK_THRESHOLD
-            and last_voltage <= R_PEAK_THRESHOLD
-        ):
-            r_peaks.append(now)
-
-        last_voltage = voltage
 
     return jsonify({"status": "ok"}), 200
 
@@ -78,20 +76,20 @@ def get_latest_ecg():
 
     with lock:
         is_online = (now - last_update_time) < OFFLINE_TIMEOUT
-        voltage_data = list(ecg_buffer)[-20:] if is_online else []
+        voltages = list(ecg_buffer)[-20:] if is_online else []
         bpm = calculate_bpm() if is_online else None
 
     return jsonify({
         "timestamp": int(now * 1000),
-        "voltage": voltage_data,
+        "voltage": voltages,
         "bpm": bpm,
         "device_online": is_online
     })
 
-# ================= HEALTH CHECK =================
+# ================= HEALTH =================
 @app.route("/")
 def home():
-    return "ECG Backend Running (Real BPM)", 200
+    return "ECG Backend Running (Batch + Real BPM)", 200
 
 # ================= RUN =================
 if __name__ == "__main__":
